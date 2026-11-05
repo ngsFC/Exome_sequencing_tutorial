@@ -11,7 +11,7 @@
 | File | Content |
 |------|---------|
 | `01_from_reads_to_variants.Rmd` | FASTQ → `fastp` → `bwa mem` → `samtools` (sort, duplicates, coverage) → `bcftools` (calling, filtering, normalization, `csq` annotation) → benchmark against the GIAB truth set |
-| `02_somatic_mutations_wilms.Rmd` | Somatic MAF with `maftools`: one sample per patient, cohort summary, tumor mutational burden vs TCGA, oncoplots, TP53 lollipop, Favorable vs Unfavorable histology |
+| `02_somatic_mutations_wilms.Rmd` | Somatic MAF with `maftools`: one sample per patient, cohort summary, tumor mutational burden vs TCGA, oncoplots, TP53 lollipop, matched normal controls |
 
 Module 1 runs real shell commands (`bash` chunks) inside the Binder container, so it works the same from any computer (Windows, macOS, Linux): only a web browser is needed. Its outputs go to `work/` (not committed). Pre-rendered reports are in `html/`.
 

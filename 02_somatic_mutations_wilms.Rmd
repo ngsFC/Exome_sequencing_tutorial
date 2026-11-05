@@ -177,7 +177,7 @@ Module 1 turned the reads of **one** person into a list of **germline** variants
 
 To find them, a tumor exome is sequenced together with a **normal** sample of the same patient (usually blood), and a somatic caller keeps the variants present in the tumor but **not** in the normal. This module starts *after* that step, from the results of the GDC somatic pipeline for the Wilms tumors of the **TARGET** program.
 
-**Plan:** the MAF format → one sample per patient → cohort summary → mutation burden → the genes → TP53 in detail → Favorable vs Unfavorable histology.
+**Plan:** the MAF format → one sample per patient → cohort summary → mutation burden → the genes → TP53 in detail → every tumor and its control.
 
 # Part 1 — The MAF Format
 
@@ -249,7 +249,7 @@ samples_per_patient <- samples %>% group_by(case_submitter_id) %>% filter(n() > 
 ```
 
 ```{r table-duplicates}
-kable(samples_per_patient %>% select(case_submitter_id, Tumor_Sample_Barcode, sample_type, histologic_subtype),
+kable(samples_per_patient %>% select(case_submitter_id, Tumor_Sample_Barcode, sample_type),
       caption = "Patients with more than one sequenced tumor sample.")
 ```
 
@@ -269,7 +269,8 @@ maf
 ```
 
 ```{r table-cohort}
-kable(count(cohort, histologic_subtype, name = "patients"), caption = "Patients in the analysis, by histology.")
+kable(tibble(`tumor samples in the MAF` = nrow(samples), `patients analyzed` = nrow(cohort)),
+      caption = "One sample per patient.")
 ```
 
 # Part 3 — Cohort Summary
@@ -327,13 +328,10 @@ plotTiTv(titv_result)
 
 # Part 5 — The Mutated Genes
 
-An **oncoplot** is the standard picture of a cancer cohort: one column per patient, one row per gene, colored by the type of mutation. The bar on top shows each patient's number of mutations; the annotation below, the histology.
+An **oncoplot** is the standard picture of a cancer cohort: one column per patient, one row per gene, colored by the type of mutation. The bar on top shows each patient's number of mutations.
 
 ```{r plot-oncoplot-top, fig.width=11, fig.height=7}
-histology_colors <- list(histologic_subtype = c(Favorable = "#2980b9", Unfavorable = "#e74c3c"))
-
-oncoplot(maf, top = 15, clinicalFeatures = "histologic_subtype", annotationColor = histology_colors,
-         sortByAnnotation = TRUE, removeNonMutated = FALSE, fontSize = 0.7, showTumorSampleBarcodes = FALSE)
+oncoplot(maf, top = 15, removeNonMutated = FALSE, fontSize = 0.7, showTumorSampleBarcodes = FALSE)
 ```
 
 <div class="alert-info">
@@ -342,7 +340,7 @@ oncoplot(maf, top = 15, clinicalFeatures = "histologic_subtype", annotationColor
 
 ## Known Wilms Tumor Drivers
 
-Wilms tumor has a well-studied set of driver genes, falling into a few pathways: the **WT1/β-catenin** pathway (`WT1`, `CTNNB1`, `AMER1`), **microRNA processing** (`DROSHA`, `DGCR8`, `DICER1`), **kidney development** transcription factors (`SIX1`, `SIX2`), **chromatin and transcription regulators** (`MLLT1`, `BCOR`, `ARID1A`, `CDC73`), and `TP53` in anaplastic tumors.
+Wilms tumor has a well-studied set of driver genes, falling into a few pathways: the **WT1/β-catenin** pathway (`WT1`, `CTNNB1`, `AMER1`), **microRNA processing** (`DROSHA`, `DGCR8`, `DICER1`), **kidney development** transcription factors (`SIX1`, `SIX2`), **chromatin and transcription regulators** (`MLLT1`, `BCOR`, `ARID1A`, `CDC73`), and `TP53`.
 
 ```{r drivers, echo=TRUE}
 wilms_drivers <- c("TP53", "WT1", "CTNNB1", "AMER1", "DROSHA", "DGCR8", "DICER1",
@@ -351,8 +349,7 @@ drivers_found <- intersect(wilms_drivers, getGeneSummary(maf)$Hugo_Symbol)
 ```
 
 ```{r plot-oncoplot-drivers, fig.width=11, fig.height=5.5}
-oncoplot(maf, genes = drivers_found, clinicalFeatures = "histologic_subtype", annotationColor = histology_colors,
-         sortByAnnotation = TRUE, removeNonMutated = FALSE, keepGeneOrder = TRUE,
+oncoplot(maf, genes = drivers_found, removeNonMutated = FALSE, keepGeneOrder = TRUE,
          fontSize = 0.8, showTumorSampleBarcodes = FALSE)
 ```
 
@@ -377,41 +374,45 @@ lollipopPlot(maf, gene = "TP53", AACol = "HGVSp_Short", showMutationRate = TRUE,
 datatable(
   subsetMaf(maf, genes = "TP53", mafObj = FALSE) %>%
     as_tibble() %>%
-    left_join(cohort %>% select(Tumor_Sample_Barcode, histologic_subtype), by = "Tumor_Sample_Barcode") %>%
-    transmute(Tumor_Sample_Barcode, histologic_subtype, Variant_Classification, HGVSp_Short,
+    transmute(Tumor_Sample_Barcode, Variant_Classification, HGVSp_Short,
               VAF = round(as.numeric(t_alt_count) / as.numeric(t_depth), 2)),
   rownames = FALSE, options = list(dom = "tp", pageLength = 15),
   caption = "Every TP53 mutation in the cohort."
 )
 ```
 
-# Part 7 — Favorable vs Unfavorable Histology
+# Part 7 — Every Tumor Has Its Control
 
-Do the two histologies carry different mutations? `clinicalEnrichment()` tests, for every gene mutated in at least a few patients, whether it is mutated more often in one group than in the others (**Fisher's exact test**).
+A somatic mutation can only be called by comparing the tumor with **normal DNA of the same patient**: without it, there is no way to tell an inherited variant from one the tumor acquired. The MAF records, for every mutation, which normal sample was used (`Matched_Norm_Sample_Barcode`). Its sample-type code says what that control was: **10 = blood**, **11 = normal tissue** (here, kidney next to the tumor).
 
-```{r clinical-enrichment, echo=TRUE}
-enrichment <- clinicalEnrichment(maf, clinicalFeature = "histologic_subtype", minMut = 3)
+```{r matched-normals, echo=TRUE}
+controls <- maf_table %>%
+  filter(Tumor_Sample_Barcode %in% cohort$Tumor_Sample_Barcode) %>%
+  distinct(Tumor_Sample_Barcode, Matched_Norm_Sample_Barcode) %>%
+  mutate(control_type = recode(str_sub(word(Matched_Norm_Sample_Barcode, 4, sep = "-"), 1, 2),
+                               `10` = "Blood", `11` = "Normal kidney"))
 ```
 
-```{r table-enrichment}
+```{r table-matched-normals}
+kable(count(controls, control_type, name = "tumors"), caption = "The matched normal sample used for each tumor.")
+```
+
+## One Child in Both Tutorials
+
+Patient **TARGET-50-CAAAAR** is the one child present in both this tutorial and the companion *RNA-seq tutorial* (where its tumor is compared with its own normal kidney). Its exome carries two somatic mutations:
+
+```{r table-shared-patient}
 kable(
-  enrichment$groupwise_comparision %>%
-    as_tibble() %>%
-    filter(Group1 == "Unfavorable") %>%
-    transmute(gene = Hugo_Symbol, `mutated in Unfavorable` = n_mutated_group1, `mutated in Favorable` = n_mutated_group2,
-              p_value = signif(p_value, 3), fdr = signif(fdr, 3)),
-  caption = "Genes mutated in at least 3 patients: Unfavorable vs Favorable."
+  maf_table %>%
+    filter(str_detect(Tumor_Sample_Barcode, "CAAAAR")) %>%
+    transmute(gene = Hugo_Symbol, Variant_Classification, HGVSp_Short, Tumor_Sample_Barcode, Matched_Norm_Sample_Barcode,
+              VAF = round(as.numeric(t_alt_count) / as.numeric(t_depth), 2)),
+  caption = "Somatic mutations of patient CAAAAR."
 )
 ```
 
-```{r plot-enrichment, fig.width=8, fig.height=4}
-plotEnrichmentResults(enrich_res = enrichment, pVal = 0.05, geneFontSize = 0.8, annoFontSize = 0.7)
-```
-
 <div class="alert-info">
-**TP53 is the defining mutation of anaplastic Wilms tumor.** Anaplasia, the histological hallmark of the Unfavorable group (large, abnormal nuclei and chaotic mitoses), is tightly linked to loss of p53: without it, cells with damaged or abnormal genomes are no longer stopped. This is why TP53 status is studied as a biomarker for risk stratification: it identifies the tumors most likely to resist standard therapy. The result here, obtained from a few dozen exomes, reproduces one of the best-established findings in Wilms tumor biology.
-
-**A caution on small numbers.** With `r nrow(cohort)` patients only very strong differences can reach significance. Genes mutated in 1–2 patients cannot be tested meaningfully at all, which is the normal situation in pediatric cancer genomics: findings need large, multi-center cohorts to be confirmed.
+**A WT1 driver, with a second hit.** `WT1` is the first gene ever linked to Wilms tumor, a transcription factor essential for kidney development. This splice-site mutation disrupts how its mRNA is assembled. Its VAF of about 0.8, well above the 0.5 expected for a mutation on one of two copies, means most tumor reads carry it: the normal copy of `WT1` has most likely been **lost** in the tumor. Losing both working copies of a tumor suppressor (the "two-hit" model, first described for childhood cancers) is the classic way WT1 drives Wilms tumor.
 </div>
 
 # Summary
@@ -419,7 +420,8 @@ plotEnrichmentResults(enrich_res = enrichment, pVal = 0.05, geneFontSize = 0.8, 
 - **Germline** variants are inherited and in every cell; **somatic** mutations are acquired by the tumor and found by comparing tumor and normal DNA.
 - A **MAF** lists somatic mutations with their annotation; **one sample per patient** must be kept for cohort statistics.
 - Wilms tumor has a **very low mutational burden**, typical of pediatric cancers.
-- Frequent genes are not necessarily drivers: **TP53**, with mutations clustered in its DNA-binding domain, is a true driver, and it is **specific to Unfavorable (anaplastic) histology**.
+- Frequent genes are not necessarily drivers: **TP53**, with mutations clustered in its DNA-binding domain, is a true driver.
+- Every somatic call depends on a **matched normal** (blood or normal kidney) from the same patient.
 
 ---
 
