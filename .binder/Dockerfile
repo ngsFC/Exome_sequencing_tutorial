@@ -11,7 +11,7 @@ COPY --chown=${NB_USER} . ${HOME}
 USER ${NB_USER}
 
 RUN R -e "options(repos = list(CRAN = 'https://packagemanager.posit.co/cran/__linux__/jammy/latest')); \
-          pkgs <- c('tidyverse', 'jsonlite', 'DT', 'BiocManager', 'knitr', 'rmarkdown'); \
+          pkgs <- c('tidyverse', 'jsonlite', 'DT', 'BiocManager', 'knitr', 'rmarkdown', 'R.utils'); \
           install.packages(pkgs); \
           BiocManager::install('maftools', update = FALSE, ask = FALSE); \
           all_pkgs <- c(pkgs, 'maftools'); \

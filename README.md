@@ -32,4 +32,4 @@ All built once by `data-prep/build_germline_data.sh` and `data-prep/build_somati
 
 ## Environment
 
-Built by [repo2docker](https://repo2docker.readthedocs.io/) from `.binder/Dockerfile` (`FROM rocker/binder:4.4.1`), adding the Ubuntu packages `bwa`, `samtools`, `bcftools`, `tabix`, `fastp`, `bedtools`, and the R packages `tidyverse`, `jsonlite`, `DT`, `knitr`, `rmarkdown` and Bioconductor's `maftools`. No network access is needed at runtime.
+Built by [repo2docker](https://repo2docker.readthedocs.io/) from `.binder/Dockerfile` (`FROM rocker/binder:4.4.1`), adding the Ubuntu packages `bwa`, `samtools`, `bcftools`, `tabix`, `fastp`, `bedtools`, and the R packages `tidyverse`, `jsonlite`, `DT`, `knitr`, `rmarkdown`, `R.utils` (needed by `maftools::tcgaCompare()` to read its bundled TCGA files) and Bioconductor's `maftools`. No network access is needed at runtime.
