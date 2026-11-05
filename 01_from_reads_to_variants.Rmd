@@ -1,0 +1,690 @@
+---
+title: "Module 1 — From Reads to Variants"
+subtitle: "Exome Sequencing Tutorial: FASTQ → BAM → VCF, Benchmarked Against Genome in a Bottle"
+author:
+  - "**Francesco Cecere** · *Senior Bioinformatic Researcher* · AORN Santobono-Pausilipon IRCCS"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    fig_width: 10
+    fig_height: 6
+---
+
+<style>
+body { font-size: 15px; }
+
+h1 {
+  border-bottom: 3px solid #2980b9;
+  padding-bottom: 8px;
+  color: #1a252f;
+  margin-top: 32px;
+}
+h2 {
+  border-bottom: 1px solid #aed6f1;
+  padding-bottom: 4px;
+  color: #2471a3;
+  margin-top: 22px;
+}
+h3 { color: #1f618d; }
+
+blockquote {
+  background-color: #eaf4fd;
+  border-left: 5px solid #2980b9;
+  padding: 14px 20px;
+  border-radius: 0 6px 6px 0;
+  font-style: italic;
+  color: #2c3e50;
+  margin: 18px 0;
+}
+blockquote p { margin: 0; }
+
+.value-boxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 24px 0 32px 0;
+}
+.vbox {
+  background-color: #2980b9;
+  background: linear-gradient(135deg, #2980b9 0%, #1a5276 100%);
+  color: #ffffff !important;
+  border-radius: 10px;
+  padding: 20px 28px;
+  min-width: 150px;
+  text-align: center;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.15);
+  flex: 1;
+  transition: transform 0.2s;
+}
+.vbox:hover { transform: translateY(-3px); }
+.vbox.green  { background-color: #27ae60; background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%); }
+.vbox.red    { background-color: #e74c3c; background: linear-gradient(135deg, #e74c3c 0%, #a93226 100%); }
+.vbox.purple { background-color: #8e44ad; background: linear-gradient(135deg, #8e44ad 0%, #6c3483 100%); }
+.vbox .vbox-number, .vbox-number {
+  font-size: 2.6em; font-weight: 700; line-height: 1.1; color: #ffffff !important;
+}
+.vbox .vbox-label, .vbox-label {
+  font-size: 0.82em; margin-top: 5px; opacity: 0.92; letter-spacing: 0.02em; color: #ffffff !important;
+}
+
+.alert-sig {
+  background: #d5f5e3;
+  border-left: 5px solid #27ae60;
+  padding: 12px 18px;
+  border-radius: 0 6px 6px 0;
+  margin: 12px 0;
+}
+.alert-notsig {
+  background: #fdf2f8;
+  border-left: 5px solid #a569bd;
+  padding: 12px 18px;
+  border-radius: 0 6px 6px 0;
+  margin: 12px 0;
+}
+.alert-info {
+  background: #fef9e7;
+  border-left: 5px solid #f39c12;
+  padding: 12px 18px;
+  border-radius: 0 6px 6px 0;
+  margin: 12px 0;
+  color: #7d6608 !important; /* flatly's built-in .alert-info sets color:#fff; override so text is visible on our pale-yellow bg */
+}
+.alert-info strong { color: #7d6608 !important; }
+
+.dataTables_wrapper { margin: 10px 0 24px 0; font-size: 0.93em; }
+table.dataTable thead th {
+  background-color: #2980b9 !important;
+  color: white !important;
+}
+.dt-buttons .btn { font-size: 0.82em; padding: 3px 10px; }
+
+.report-footer {
+  margin-top: 40px;
+  padding-top: 16px;
+  border-top: 1px solid #ccc;
+  font-size: 0.85em;
+  color: #777;
+  text-align: center;
+}
+
+.tocify {
+  background-color: #1a252f !important;
+  border: none !important;
+  border-radius: 8px;
+  padding: 6px 0;
+}
+.tocify .tocify-item > a {
+  color: #bdc3c7 !important;
+  padding: 6px 14px;
+  font-size: 0.88em;
+  border-radius: 4px;
+  transition: background 0.18s, color 0.18s;
+  text-decoration: none;
+}
+.tocify .tocify-item > a:hover {
+  background-color: #2c3e50 !important;
+  color: #ffffff !important;
+}
+.tocify .tocify-item.active > a {
+  background-color: #2980b9 !important;
+  color: #ffffff !important;
+  font-weight: 600;
+  border-radius: 4px;
+}
+.tocify-subheader {
+  background-color: #1a252f !important;
+}
+.tocify-subheader .tocify-item > a {
+  padding-left: 26px !important;
+  font-size: 0.82em !important;
+  color: #7f8c8d !important;
+}
+.tocify-subheader .tocify-item.active > a {
+  background-color: #21618c !important;
+  color: #ecf0f1 !important;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = FALSE,
+  warning   = FALSE,
+  message   = FALSE,
+  fig.align = "center",
+  dpi       = 96
+)
+```
+
+```{r libraries, include=FALSE}
+library(tidyverse)   # dplyr, ggplot2, tidyr, readr, etc.
+library(jsonlite)    # read the fastp QC report
+library(DT)          # interactive downloadable tables
+library(knitr)       # kable for simple inline tables
+```
+
+# Welcome
+
+This tutorial walks through an **exome sequencing (WES)** analysis in two modules:
+
+| Module | Question |
+|--------|----------|
+| **1 — From reads to variants** (this one) | How do raw sequencing reads become a list of variants, and how good is that list? |
+| **2 — Somatic mutations in Wilms tumor** | Which genes are mutated in a real pediatric tumor cohort, and do they differ between histologies? |
+
+Module 1 runs the **real command-line tools** of a germline variant-calling pipeline. The grey chunks marked `bash` are shell commands: in RStudio they run exactly like R chunks (the green ▶ arrow), inside the Binder Linux machine, whatever computer you are using.
+
+<div class="alert-info">
+**Why only a small region?** A real exome is ~50 million bases sequenced to ~100×: aligning it needs tens of GB of memory and hours of compute. We keep every step identical but restrict the data to **3 million bases of chromosome 11** (11p15.5, the imprinted region containing `IGF2` and `H19`, the locus most frequently altered in Wilms tumor). The full pipeline then runs in under a minute.
+</div>
+
+# Part 1 — The Input Files
+
+All inputs are in `data/germline/`, built by `data-prep/build_germline_data.sh`:
+
+| File | What it is |
+|------|------------|
+| `NA12878_exome_R1.fastq.gz`, `_R2.fastq.gz` | Paired-end reads (2 × 151 bp, Illumina TruSeq exome) of **NA12878**, the most studied human genome, from the **Genome in a Bottle (GIAB)** consortium |
+| `reference_chr11p15.fa` | The reference genome sequence (GRCh37) for chromosome 11, positions 1–3,000,000 |
+| `exome_targets.bed` | The regions the exome kit was designed to capture |
+| `genes_Ensembl87.gff3` | Gene and transcript annotation (Ensembl) |
+| `giab_truth.vcf.gz`, `giab_confident.bed` | GIAB's **truth set**: the variants NA12878 really carries, and the regions where that truth is reliable |
+
+<div class="alert-info">
+**Why NA12878?** For a patient we never know the "right answer". For NA12878, GIAB has combined many sequencing technologies into a high-confidence set of true variants. Analyzing its exome lets us **measure** how many real variants our pipeline finds and how many false ones it reports, which is impossible with any other sample.
+</div>
+
+All outputs go to a `work/` folder:
+
+```{bash make-workdir, echo=TRUE}
+mkdir -p work
+for tool in fastp bwa samtools bcftools bedtools; do
+  printf "%-9s " "$tool"; command -v "$tool"
+done
+```
+
+## FASTQ: Raw Reads
+
+A FASTQ file stores each read in **4 lines**: an identifier starting with `@`, the bases, a `+` separator, and one **quality** character per base.
+
+```{bash fastq-head, echo=TRUE}
+zcat data/germline/NA12878_exome_R1.fastq.gz | head -8
+```
+
+```{bash fastq-count, echo=TRUE}
+echo "Reads in R1: $(( $(zcat data/germline/NA12878_exome_R1.fastq.gz | wc -l) / 4 ))"
+echo "Reads in R2: $(( $(zcat data/germline/NA12878_exome_R2.fastq.gz | wc -l) / 4 ))"
+```
+
+<div class="alert-info">
+**Base quality (Phred score).** Each quality character encodes the probability $p$ that the base call is wrong: $Q = -10 \log_{10} p$. Q20 means 1 error in 100, Q30 means 1 in 1,000. The character is the ASCII code of $Q + 33$, so `5` is Q20 and `?` is Q30. (These reads come from a BAM file whose base qualities were already *recalibrated* by GATK, so their quality values look smoother than those of a fresh sequencing run.) In a paired-end run, the read with the same identifier in R1 and R2 comes from the two ends of the same DNA fragment.
+</div>
+
+## The Exome Targets
+
+```{bash bed-head, echo=TRUE}
+head -5 data/germline/exome_targets.bed
+echo "Targets: $(wc -l < data/germline/exome_targets.bed)"
+awk '{bp += $3 - $2} END {print "Targeted bases: " bp}' data/germline/exome_targets.bed
+```
+
+A **BED** file lists intervals as `chromosome  start  end`, with **0-based** start (the first base of a chromosome is 0) and 1-based end. Only about 9% of our 3 Mb region is targeted: an exome captures the coding exons, ~1–2% of the genome.
+
+# Part 2 — Read QC and Trimming with fastp
+
+`fastp` checks read quality and removes what would hurt the alignment: adapter sequence (when the DNA fragment is shorter than the read), low-quality tails, reads with too many unknown bases (`N`).
+
+```{bash fastp, echo=TRUE}
+fastp \
+  -i data/germline/NA12878_exome_R1.fastq.gz -I data/germline/NA12878_exome_R2.fastq.gz \
+  -o work/trimmed_R1.fastq.gz -O work/trimmed_R2.fastq.gz \
+  --detect_adapter_for_pe \
+  --json work/fastp.json --html work/fastp.html \
+  2> work/fastp.log
+tail -n 12 work/fastp.log
+```
+
+```{r fastp-summary}
+fastp <- fromJSON("work/fastp.json")
+
+kable(
+  tibble(
+    metric = c("Reads before", "Reads after", "Q30 bases before (%)", "Q30 bases after (%)",
+               "Mean read length after (R1)", "Duplication rate (%)", "Reads with adapter trimmed"),
+    value  = c(fastp$summary$before_filtering$total_reads, fastp$summary$after_filtering$total_reads,
+               round(100 * fastp$summary$before_filtering$q30_rate, 1), round(100 * fastp$summary$after_filtering$q30_rate, 1),
+               fastp$summary$after_filtering$read1_mean_length, round(100 * fastp$duplication$rate, 1),
+               fastp$adapter_cutting$adapter_trimmed_reads)
+  ),
+  caption = "fastp summary (the full interactive report is work/fastp.html)."
+)
+```
+
+```{r plot-quality, fig.width=10, fig.height=4.5}
+quality_curve <- function(curves, label) {
+  tibble(position = seq_along(curves$mean), mean_quality = curves$mean, step = label)
+}
+
+bind_rows(
+  quality_curve(fastp$read1_before_filtering$quality_curves, "R1 before"),
+  quality_curve(fastp$read1_after_filtering$quality_curves,  "R1 after"),
+  quality_curve(fastp$read2_before_filtering$quality_curves, "R2 before"),
+  quality_curve(fastp$read2_after_filtering$quality_curves,  "R2 after")
+) %>%
+  separate(step, into = c("read", "stage"), sep = " ") %>%
+  ggplot(aes(x = position, y = mean_quality, color = stage)) +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept = 30, linetype = "dashed", color = "grey40") +
+  facet_wrap(~ read) +
+  scale_color_manual(values = c(before = "#e74c3c", after = "#2980b9")) +
+  labs(x = "Position in read (bp)", y = "Mean base quality (Phred)", color = NULL) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+<div class="alert-info">
+**How to read it.** Illumina quality is highest at the start of the read and drops toward the end; **R2 is usually a bit worse than R1**. Most bases above the dashed Q30 line is a good run. Very few reads are removed here: this is a high-quality dataset. Open `work/fastp.html` in the Files pane for the full report.
+</div>
+
+# Part 3 — Alignment with BWA-MEM
+
+Alignment finds, for every read, the position in the reference genome it most likely came from. **BWA-MEM** is the standard aligner for short DNA reads. It first needs an **index** of the reference (built once per reference genome):
+
+```{bash bwa-index, echo=TRUE}
+cp data/germline/reference_chr11p15.fa work/reference.fa
+bwa index work/reference.fa 2> work/bwa_index.log
+samtools faidx work/reference.fa
+ls work/reference.fa*
+```
+
+Then we align, adding a **read group** (`-R`): a tag saying which sample and sequencing run every read belongs to, required by most downstream tools. The output (SAM) is piped directly into `samtools`, which sorts the alignments by position and writes the compressed **BAM** format.
+
+```{bash bwa-mem, echo=TRUE}
+bwa mem -t 2 \
+  -R '@RG\tID:NA12878_run1\tSM:NA12878\tPL:ILLUMINA\tLB:TruSeq_exome' \
+  work/reference.fa work/trimmed_R1.fastq.gz work/trimmed_R2.fastq.gz 2> work/bwa_mem.log |
+  samtools fixmate -m - - |
+  samtools sort -o work/aligned.bam -
+samtools index work/aligned.bam
+ls -lh work/aligned.bam
+```
+
+<div class="alert-info">
+**What `fixmate -m` does.** It adds to every read information about its mate (position, score). The duplicate-marking step below needs it to recognize pairs.
+</div>
+
+## Reading a SAM Record
+
+```{bash sam-view, echo=TRUE}
+samtools view work/aligned.bam | head -3 | cut -f 1-9
+```
+
+The first 9 columns of every alignment:
+
+| # | field | meaning |
+|---|-------|---------|
+| 1 | QNAME | read name |
+| 2 | FLAG | bitwise flags: paired, mapped, reverse strand, first/second in pair... ([decode any value](https://broadinstitute.github.io/picard/explain-flags.html)) |
+| 3–4 | RNAME, POS | chromosome and leftmost position (1-based) |
+| 5 | MAPQ | mapping quality: confidence that the position is right. 60 = unique; 0 = the read fits equally well elsewhere |
+| 6 | CIGAR | how the read aligns: `151M` = 151 aligned bases; `I`/`D` = insertion/deletion; `S` = soft-clipped |
+| 7–9 | RNEXT, PNEXT, TLEN | mate's chromosome (`=` same), mate's position, fragment length |
+
+## Marking PCR Duplicates
+
+Library preparation amplifies DNA fragments by PCR, so the same original molecule can be sequenced several times. These copies are **not independent evidence**: a PCR error in one copy would look like a variant supported by many reads. `samtools markdup` flags read pairs that start and end at exactly the same positions; variant callers then ignore them.
+
+```{bash markdup, echo=TRUE}
+samtools markdup -s work/aligned.bam work/aligned.markdup.bam 2> work/markdup.log
+samtools index work/aligned.markdup.bam
+grep -E "READ:|DUPLICATE TOTAL" work/markdup.log
+```
+
+# Part 4 — Alignment QC
+
+```{bash flagstat, echo=TRUE}
+samtools flagstat work/aligned.markdup.bam > work/flagstat.txt
+head -n 8 work/flagstat.txt
+```
+
+```{bash on-target, echo=TRUE}
+total=$(samtools view -c -F 0x904 work/aligned.markdup.bam)
+on_target=$(samtools view -c -F 0x904 -L data/germline/exome_targets.bed work/aligned.markdup.bam)
+echo -e "mapped_reads\t$total\non_target_reads\t$on_target" | tee work/on_target.tsv
+```
+
+```{r on-target-rate}
+on_target <- read_tsv("work/on_target.tsv", col_names = c("metric", "reads"), show_col_types = FALSE)
+on_target_pct <- round(100 * on_target$reads[2] / on_target$reads[1], 1)
+```
+
+**`r on_target_pct`%** of the mapped reads overlap a target. This **on-target rate** measures how well the capture worked: typical exomes reach 60–80%. The rest are "off-target" reads, mostly from DNA flanking the targets.
+
+## Coverage
+
+**Coverage** (or depth) at a position is the number of reads covering it. It is the single most important number for variant calling: a heterozygous variant is seen in about half the reads, so with 4 reads it can easily be missed by chance.
+
+```{bash coverage, echo=TRUE}
+# -a: report every targeted position, also those with zero reads.
+samtools depth -a -b data/germline/exome_targets.bed work/aligned.markdup.bam > work/target_depth.tsv
+head -3 work/target_depth.tsv
+```
+
+```{r coverage-summary}
+depth <- read_tsv("work/target_depth.tsv", col_names = c("chrom", "pos", "depth"), show_col_types = FALSE)
+
+coverage_summary <- tibble(
+  metric = c("Targeted bases", "Mean depth", "Median depth",
+             "Bases at >= 1x (%)", "Bases at >= 10x (%)", "Bases at >= 20x (%)"),
+  value  = c(nrow(depth), round(mean(depth$depth), 1), median(depth$depth),
+             round(100 * mean(depth$depth >= 1), 1), round(100 * mean(depth$depth >= 10), 1),
+             round(100 * mean(depth$depth >= 20), 1))
+)
+kable(coverage_summary, caption = "Coverage over the exome targets (duplicates excluded).")
+```
+
+```{r plot-coverage, fig.width=10, fig.height=4.5}
+depth %>%
+  mutate(depth = pmin(depth, 150)) %>%
+  ggplot(aes(x = depth)) +
+  geom_histogram(binwidth = 2, fill = "#2980b9", color = "white") +
+  geom_vline(xintercept = 10, linetype = "dashed", color = "#e74c3c") +
+  labs(x = "Depth (capped at 150)", y = "Targeted bases",
+       title = "Coverage distribution over the targets; dashed line: 10x") +
+  theme_bw(base_size = 12)
+```
+
+```{r plot-coverage-region, fig.width=11, fig.height=4}
+depth %>%
+  mutate(bin = floor(pos / 50000) * 50000) %>%
+  group_by(bin) %>%
+  summarise(mean_depth = mean(depth), .groups = "drop") %>%
+  ggplot(aes(x = bin / 1e6, y = mean_depth)) +
+  geom_col(fill = "#8e44ad") +
+  labs(x = "Position on chromosome 11 (Mb)", y = "Mean target depth",
+       title = "Mean target depth along the region (50 kb bins)") +
+  theme_bw(base_size = 12)
+```
+
+<div class="alert-info">
+**Coverage is very uneven, and that matters.** Large parts of the targets have few or no reads. 11p15.5 is one of the most **GC-rich** regions of the genome, and GC-rich DNA is captured and amplified poorly. This is a real, well-known limitation of exome sequencing: **a variant in a region with no reads cannot be called, by any software.** We will see its direct consequence in Part 7.
+</div>
+
+# Part 5 — Variant Calling with bcftools
+
+At every targeted position, `bcftools mpileup` collects the bases of all reads (the "pileup") and computes **genotype likelihoods**: how probable the observed bases are if the sample is homozygous reference (0/0), heterozygous (0/1), or homozygous alternative (1/1). `bcftools call` then picks the most likely genotype and reports the positions that differ from the reference.
+
+```{bash call, echo=TRUE}
+bcftools mpileup -f work/reference.fa -T data/germline/exome_targets.bed \
+    -a FORMAT/AD,FORMAT/DP -q 20 -Q 20 work/aligned.markdup.bam 2> /dev/null |
+  bcftools call -m -v -Oz -o work/calls.raw.vcf.gz 2> /dev/null
+bcftools index -t work/calls.raw.vcf.gz
+echo "Raw variant calls: $(bcftools view -H work/calls.raw.vcf.gz | wc -l)"
+```
+
+| option | meaning |
+|--------|---------|
+| `-T targets.bed` | look only at targeted positions |
+| `-q 20`, `-Q 20` | ignore reads with mapping quality < 20 and bases with quality < 20 |
+| `-a FORMAT/AD,FORMAT/DP` | report allele depths and total depth per sample |
+| `call -m` | the multiallelic caller (current default model) |
+| `call -v` | output variant sites only |
+
+## Reading a VCF
+
+A **VCF** (Variant Call Format) file has a header (lines starting with `#`) describing every field, then one line per variant.
+
+```{bash vcf-view, echo=TRUE}
+bcftools view -H work/calls.raw.vcf.gz | head -3 | cut -f 1-8 | cut -c 1-150
+```
+
+```{bash vcf-query, echo=TRUE}
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%QUAL\t[%GT\t%DP\t%AD]\n' work/calls.raw.vcf.gz | head -5
+```
+
+The essential columns: `POS` (1-based position), `REF` and `ALT` alleles, `QUAL` (Phred-scaled confidence that the site is variant), and per sample `GT` (genotype: `0/1` heterozygous, `1/1` homozygous alternative), `DP` (depth) and `AD` (reads supporting REF, ALT).
+
+# Part 6 — Filtering, Normalizing and Annotating
+
+## Hard Filters
+
+Raw calls include low-confidence ones. A simple, widely used strategy is to **flag** (not delete) calls with low quality or low depth. They stay in the file with `FILTER = LowQual`, so the decision is documented and reversible.
+
+```{bash filter, echo=TRUE}
+bcftools filter -s LowQual -e 'QUAL < 20 || INFO/DP < 10' work/calls.raw.vcf.gz -Oz -o work/calls.filtered.vcf.gz
+bcftools index -t work/calls.filtered.vcf.gz
+bcftools query -f '%FILTER\n' work/calls.filtered.vcf.gz | sort | uniq -c
+```
+
+## Normalizing
+
+The same indel can be written in several ways (e.g. a deletion inside a repeat can be placed at any copy of the repeat). `bcftools norm` puts every variant in a **canonical** form (left-aligned, minimal alleles) and splits multi-allelic sites into one line per allele. Without this, comparing two VCFs (as we do in Part 7) misses identical variants written differently.
+
+```{bash norm, echo=TRUE}
+bcftools norm -f work/reference.fa -m -any work/calls.filtered.vcf.gz -Oz -o work/calls.norm.vcf.gz 2> /dev/null
+bcftools index -t work/calls.norm.vcf.gz
+```
+
+## Variant Statistics
+
+```{bash stats, echo=TRUE}
+bcftools stats -f PASS work/calls.norm.vcf.gz > work/calls.stats.txt
+grep -E "^SN" work/calls.stats.txt | cut -f 3-
+grep -E "^TSTV" work/calls.stats.txt | cut -f 3-5
+```
+
+```{r tstv}
+tstv <- read_lines("work/calls.stats.txt") %>% str_subset("^TSTV") %>% str_split("\t") %>% pluck(1) %>% `[`(5)
+```
+
+<div class="alert-info">
+**The Ts/Tv ratio, a free quality check.** Transitions (A↔G, C↔T) are chemically much more frequent than transversions. In **coding** regions the true ratio is about **2.8–3.3** (genome-wide ~2.0–2.1). A value close to 0.5, what random errors would give, signals many false positives.
+
+Here the ratio is **`r tstv`**: between the two. Part of the reason is that the targets also contain UTRs and intronic flanks, where the ratio is lower than in coding exons; part is a cluster of false positives that Part 7 will reveal. With a few hundred variants the ratio is also statistically noisy: it is most useful on a full exome, with tens of thousands.
+</div>
+
+## Functional Annotation
+
+Which variants change a protein? `bcftools csq` compares each variant with the gene annotation and predicts its **consequence** on every transcript: synonymous, missense, stop gained, frameshift, splice site, UTR...
+
+```{bash csq, echo=TRUE}
+bcftools csq -f work/reference.fa -g data/germline/genes_Ensembl87.gff3 -p a \
+  work/calls.norm.vcf.gz -Oz -o work/calls.annotated.vcf.gz 2> /dev/null
+bcftools index -t work/calls.annotated.vcf.gz
+
+# One row per variant: position, alleles, genotype, and the consequence on each transcript.
+bcftools query -i 'FILTER="PASS"' -f '%POS\t%REF\t%ALT\t%QUAL\t[%GT\t%DP]\t%BCSQ\n' \
+  work/calls.annotated.vcf.gz > work/annotated_variants.tsv
+```
+
+```{r csq-table}
+annotated <- read_tsv("work/annotated_variants.tsv",
+                      col_names = c("pos", "ref", "alt", "qual", "genotype", "depth", "bcsq"),
+                      col_types = cols(.default = col_character())) %>%
+  mutate(across(c(pos, qual, depth), as.numeric))
+
+# BCSQ holds one comma-separated entry per transcript: consequence|gene|transcript|biotype|strand|aa_change|dna_change.
+# A leading "*" marks a consequence shared with another variant of the same haplotype.
+consequences <- annotated %>%
+  separate_longer_delim(bcsq, ",") %>%
+  separate_wider_delim(bcsq, "|", names = c("consequence", "gene", "transcript", "biotype", "strand", "aa_change", "dna_change"),
+                       too_few = "align_start", too_many = "drop") %>%
+  mutate(consequence = str_remove(consequence, "^\\*")) %>%
+  filter(!is.na(gene), consequence != ".")
+
+# Most severe consequence per variant, in a simplified order of severity.
+severity <- c("stop_gained", "frameshift", "splice_acceptor", "splice_donor", "start_lost", "stop_lost",
+              "inframe_deletion", "inframe_insertion", "missense", "splice_region", "synonymous",
+              "5_prime_utr", "3_prime_utr", "non_coding", "intron")
+
+worst <- consequences %>%
+  mutate(rank = match(word(consequence, 1, sep = "&"), severity)) %>%
+  filter(!is.na(rank)) %>%
+  group_by(pos, ref, alt) %>%
+  slice_min(rank, n = 1, with_ties = FALSE) %>%
+  ungroup()
+```
+
+```{r plot-consequences, fig.width=8, fig.height=4.5}
+worst %>%
+  count(consequence) %>%
+  mutate(consequence = fct_reorder(consequence, n)) %>%
+  ggplot(aes(x = n, y = consequence)) +
+  geom_col(fill = "#16a085") +
+  labs(x = "Variants (PASS)", y = NULL, title = "Most severe predicted consequence per variant") +
+  theme_bw(base_size = 12)
+```
+
+```{r table-protein-changing}
+datatable(
+  worst %>%
+    filter(consequence %in% severity[1:9]) %>%
+    transmute(position = pos, ref, alt, genotype, depth, gene, consequence, aa_change, transcript),
+  extensions = "Buttons",
+  options = list(dom = "Bfrtip", buttons = c("csv", "excel"), pageLength = 10),
+  rownames = FALSE,
+  caption = "Protein-changing variants (PASS calls, most severe consequence per variant)."
+)
+```
+
+<div class="alert-info">
+**A healthy genome is full of missense variants.** NA12878 is a healthy individual, yet this one genome carries dozens of protein-changing variants in this small region alone: every person carries thousands across the exome. Most are common, harmless polymorphisms. In a real diagnostic analysis, the next step is to filter by **population frequency** (e.g. gnomAD: a variant carried by 20% of healthy people is not the cause of a rare disease) and by predicted pathogenicity, which requires databases far larger than this tutorial.
+</div>
+
+# Part 7 — How Good Are Our Calls? Benchmarking Against GIAB
+
+We now compare our PASS calls with the GIAB truth, restricted to the positions where the comparison is fair: **targeted** by the exome kit **and** inside GIAB's **high-confidence** regions.
+
+```{bash eval-regions, echo=TRUE}
+bedtools intersect -a data/germline/exome_targets.bed -b data/germline/giab_confident.bed |
+  bedtools sort | bedtools merge > work/eval_regions.bed
+
+# Truth and calls in the evaluation regions, normalized the same way.
+bcftools view -T work/eval_regions.bed data/germline/giab_truth.vcf.gz |
+  bcftools norm -f work/reference.fa -m -any -Oz -o work/truth.eval.vcf.gz 2> /dev/null
+bcftools view -f PASS -T work/eval_regions.bed work/calls.norm.vcf.gz -Oz -o work/calls.eval.vcf.gz
+bcftools index -t work/truth.eval.vcf.gz
+bcftools index -t work/calls.eval.vcf.gz
+
+awk '{bp += $3 - $2} END {print "Evaluated bases: " bp}' work/eval_regions.bed
+```
+
+`bcftools isec` splits the two files into three groups: variants **only in the truth** (false negatives, FN: real variants we missed), **only in our calls** (false positives, FP: calls that are not real), and **in both** (true positives, TP). `-c none` requires position, REF and ALT to match exactly.
+
+```{bash isec, echo=TRUE}
+rm -rf work/isec_all
+bcftools isec -c none -p work/isec_all work/truth.eval.vcf.gz work/calls.eval.vcf.gz
+for f in 0000 0001 0002; do echo "$f: $(grep -vc '^#' work/isec_all/$f.vcf)"; done
+```
+
+```{r benchmark-function}
+benchmark <- function(dir) {
+  n <- map_int(c("0000", "0001", "0002"), ~ sum(!str_starts(read_lines(file.path(dir, paste0(.x, ".vcf"))), "#")))
+  tibble(TP = n[3], FN = n[1], FP = n[2]) %>%
+    mutate(recall = round(TP / (TP + FN), 3), precision = round(TP / (TP + FP), 3),
+           F1 = round(2 * recall * precision / (recall + precision), 3))
+}
+bench_all <- benchmark("work/isec_all")
+kable(bench_all, caption = "All evaluation regions. Recall = TP / (TP + FN): the fraction of real variants found. Precision = TP / (TP + FP): the fraction of our calls that are real.")
+```
+
+Recall is low. Why did we miss so many real variants? Look at the depth of our alignment at the missed positions:
+
+```{bash fn-depth, echo=TRUE}
+grep -v '^#' work/isec_all/0000.vcf | awk 'BEGIN{OFS="\t"} {print $1, $2 - 1, $2}' > work/missed.bed
+samtools depth -a -b work/missed.bed work/aligned.markdup.bam > work/missed_depth.tsv
+```
+
+```{r plot-fn-depth, fig.width=8, fig.height=4}
+missed_depth <- read_tsv("work/missed_depth.tsv", col_names = c("chrom", "pos", "depth"), show_col_types = FALSE)
+
+missed_depth %>%
+  mutate(depth_class = cut(depth, c(-1, 0, 4, 9, Inf), labels = c("0", "1–4", "5–9", ">= 10"))) %>%
+  count(depth_class) %>%
+  ggplot(aes(x = depth_class, y = n)) +
+  geom_col(fill = "#e74c3c") +
+  labs(x = "Read depth at the missed variant", y = "Missed variants (FN)",
+       title = paste0("Depth at the ", nrow(missed_depth), " missed true variants")) +
+  theme_bw(base_size = 12)
+```
+
+<div class="alert-info">
+**Most missed variants have zero reads.** They were never sequenced, so no caller could find them: the limit is the **data**, not the software. This is why every serious exome report states its **callable regions** (e.g. positions with ≥ 10× coverage) and why a "negative" exome never fully excludes a variant in a poorly covered gene.
+</div>
+
+Repeating the benchmark only where we had **at least 10 reads** measures the pipeline itself:
+
+```{bash callable, echo=TRUE}
+samtools depth -a -b work/eval_regions.bed work/aligned.markdup.bam |
+  awk 'BEGIN{OFS="\t"} $3 >= 10 {print $1, $2 - 1, $2}' |
+  bedtools merge > work/callable.bed
+awk '{bp += $3 - $2} END {print "Callable bases (>= 10x): " bp}' work/callable.bed
+
+bcftools view -T work/callable.bed work/truth.eval.vcf.gz -Oz -o work/truth.callable.vcf.gz
+bcftools view -T work/callable.bed work/calls.eval.vcf.gz -Oz -o work/calls.callable.vcf.gz
+bcftools index -t work/truth.callable.vcf.gz
+bcftools index -t work/calls.callable.vcf.gz
+rm -rf work/isec_callable
+bcftools isec -c none -p work/isec_callable work/truth.callable.vcf.gz work/calls.callable.vcf.gz
+```
+
+```{r benchmark-callable}
+bench_callable <- benchmark("work/isec_callable")
+kable(bind_rows(`All evaluation regions` = bench_all, `Callable (>= 10x)` = bench_callable, .id = "regions"),
+      caption = "Benchmark against the GIAB truth set.")
+```
+
+Where the data are adequate, the pipeline finds nearly every real variant. What about the false positives?
+
+```{bash fp-list, echo=TRUE}
+bcftools query -f '%POS\t%REF\t%ALT\t%QUAL\t[%DP]\n' work/isec_callable/0001.vcf > work/false_positives.tsv
+```
+
+```{r fp-genes}
+genes <- read_tsv("data/germline/genes_Ensembl87.gff3", comment = "#", col_names = FALSE, show_col_types = FALSE) %>%
+  filter(X3 == "gene") %>%
+  transmute(start = X4, end = X5, gene = str_match(X9, "Name=([^;]+)")[, 2])
+
+false_positives <- read_tsv("work/false_positives.tsv", col_names = c("pos", "ref", "alt", "qual", "depth"),
+                            show_col_types = FALSE) %>%
+  rowwise() %>%
+  mutate(gene = paste(genes$gene[genes$start <= pos & genes$end >= pos], collapse = ", "),
+         gene = if_else(gene == "", "(outside annotated genes)", gene)) %>%
+  ungroup()
+
+kable(count(false_positives, gene, name = "false_positives", sort = TRUE),
+      caption = "Genes containing the false-positive calls (callable regions).")
+```
+
+<div class="alert-info">
+**False positives cluster in difficult genes.** Most of them fall in `MUC5B` (and other mucin genes), made of long, nearly identical **tandem repeats**: short reads cannot be placed unambiguously, and small misalignments look like variants. They pass our filters with good quality and depth. Every pipeline struggles with such regions; real projects either exclude them (GIAB publishes "difficult region" lists) or confirm variants there with another technology (e.g. Sanger or long reads) before reporting them.
+</div>
+
+# Summary
+
+| step | tool | output |
+|------|------|--------|
+| Read QC and trimming | `fastp` | trimmed FASTQ + QC report |
+| Alignment | `bwa mem` | BAM |
+| Duplicate marking | `samtools fixmate` / `markdup` | BAM with duplicates flagged |
+| Alignment QC | `samtools flagstat` / `depth` | on-target rate, coverage |
+| Variant calling | `bcftools mpileup` / `call` | raw VCF |
+| Filtering and normalization | `bcftools filter` / `norm` | clean VCF |
+| Annotation | `bcftools csq` | consequences on genes |
+| Benchmarking | `bedtools`, `bcftools isec` | recall, precision |
+
+The main lessons: **coverage limits recall** far more than the caller does, and **false positives concentrate in repetitive genes**. Module 2 moves from one germline genome to a cohort of tumors.
+
+---
+
+<div class="report-footer">
+Generated on `r format(Sys.Date(), '%d %B %Y')` · Francesco Cecere (Senior Bioinformatic Researcher) · AORN Santobono-Pausilipon IRCCS
+</div>

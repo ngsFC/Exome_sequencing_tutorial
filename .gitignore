@@ -1,0 +1,16 @@
+# Rendered output (regenerate by knitting the .Rmd files)
+# Pre-rendered copies are intentionally committed under html/.
+*.html
+!html/*.html
+*.knit.md
+*.utf8.md
+
+# Files produced while running Module 1 (index, BAM, VCF...)
+work/
+
+# R session / project files
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
