@@ -165,10 +165,10 @@ knitr::opts_chunk$set(
 ```
 
 ```{r libraries, include=FALSE}
-library(tidyverse)   # dplyr, ggplot2, tidyr, readr, etc.
-library(jsonlite)    # read the fastp QC report
-library(DT)          # interactive downloadable tables
-library(knitr)       # kable for simple inline tables
+library(tidyverse)
+library(jsonlite)
+library(DT)
+library(knitr)
 ```
 
 # Welcome
@@ -177,18 +177,43 @@ This tutorial walks through an **exome sequencing (WES)** analysis in two module
 
 | Module | Question |
 |--------|----------|
-| **1 — From reads to variants** (this one) | How do raw sequencing reads become a list of variants, and how good is that list? |
+| **1 — From reads to variants** | How do raw sequencing reads become a list of variants, and how good is that list? |
 | **2 — Somatic mutations in Wilms tumor** | Which genes are mutated in a real pediatric tumor cohort, and do they differ between histologies? |
 
-Module 1 runs the **real command-line tools** of a germline variant-calling pipeline. The grey chunks marked `bash` are shell commands: in RStudio they run exactly like R chunks (the green ▶ arrow), inside the Binder Linux machine, whatever computer you are using.
+Module 1 runs the **real command-line tools** of a germline variant-calling pipeline. 
 
 <div class="alert-info">
 **Why only a small region?** A real exome is ~50 million bases sequenced to ~100×: aligning it needs tens of GB of memory and hours of compute. We keep every step identical but restrict the data to **3 million bases of chromosome 11** (11p15.5, the imprinted region containing `IGF2` and `H19`, the locus most frequently altered in Wilms tumor). The full pipeline then runs in under a minute.
 </div>
 
-# Part 1 — The Input Files
+## The Pipeline at a Glance
 
-All inputs are in `data/germline/`, built by `data-prep/build_germline_data.sh`:
+Every germline short-read pipeline follows the same backbone. Each arrow is a tool, each box a file format: understanding the **formats** is half of understanding the analysis.
+
+```text
+FASTQ  (raw reads + base qualities)
+   │   fastp ............................ QC, adapter and quality trimming
+   ▼
+FASTQ  (clean reads)
+   │   bwa mem .......................... alignment to the reference (FASTA)
+   ▼
+SAM ──► BAM  (sorted by position, indexed)
+   │   samtools fixmate / markdup ....... PCR duplicates flagged
+   ▼
+BAM  (analysis-ready) ───────────────────► QC: flagstat, on-target rate, coverage
+   │   bcftools mpileup + call .......... genotype every targeted position
+   ▼
+VCF  (raw calls)
+   │   bcftools filter / norm / csq ..... flag, normalize, annotate
+   ▼
+VCF  (final) ────────────────────────────► benchmark against the GIAB truth set
+```
+
+<div class="alert-info">
+**Germline vs somatic.** Here we look for **germline** variants: inherited, present in every cell, so expected at ~50% (heterozygous) or ~100% (homozygous) of the reads. **Somatic** variants (Module 2) arise in the tumor only, are present in a fraction of cells and can sit at 5–20% of the reads: they need different callers and a matched normal sample.
+</div>
+
+# Part 1 — The Input Files
 
 | File | What it is |
 |------|------------|
@@ -197,10 +222,6 @@ All inputs are in `data/germline/`, built by `data-prep/build_germline_data.sh`:
 | `exome_targets.bed` | The regions the exome kit was designed to capture |
 | `genes_Ensembl87.gff3` | Gene and transcript annotation (Ensembl) |
 | `giab_truth.vcf.gz`, `giab_confident.bed` | GIAB's **truth set**: the variants NA12878 really carries, and the regions where that truth is reliable |
-
-<div class="alert-info">
-**Why NA12878?** For a patient we never know the "right answer". For NA12878, GIAB has combined many sequencing technologies into a high-confidence set of true variants. Analyzing its exome lets us **measure** how many real variants our pipeline finds and how many false ones it reports, which is impossible with any other sample.
-</div>
 
 All outputs go to a `work/` folder:
 
@@ -219,6 +240,15 @@ A FASTQ file stores each read in **4 lines**: an identifier starting with `@`, t
 zcat data/germline/NA12878_exome_R1.fastq.gz | head -8
 ```
 
+| line | content | notes |
+|------|---------|-------|
+| 1 | `@read_identifier` | unique name; in a fresh Illumina run it encodes instrument, run, flowcell, lane and the cluster's x/y position on the flowcell |
+| 2 | `ACGT...N` | the base calls; `N` = the sequencer could not decide |
+| 3 | `+` | separator (sometimes followed by the identifier again) |
+| 4 | `?5?<...` | one quality character per base: line 4 is always as long as line 2 |
+
+FASTQ files are almost always **gzip-compressed** (`.fastq.gz`): read them with `zcat`, never open them in a text editor (a real exome FASTQ is several GB).
+
 ```{bash fastq-count, echo=TRUE}
 echo "Reads in R1: $(( $(zcat data/germline/NA12878_exome_R1.fastq.gz | wc -l) / 4 ))"
 echo "Reads in R2: $(( $(zcat data/germline/NA12878_exome_R2.fastq.gz | wc -l) / 4 ))"
@@ -226,6 +256,19 @@ echo "Reads in R2: $(( $(zcat data/germline/NA12878_exome_R2.fastq.gz | wc -l) /
 
 <div class="alert-info">
 **Base quality (Phred score).** Each quality character encodes the probability $p$ that the base call is wrong: $Q = -10 \log_{10} p$. Q20 means 1 error in 100, Q30 means 1 in 1,000. The character is the ASCII code of $Q + 33$, so `5` is Q20 and `?` is Q30. (These reads come from a BAM file whose base qualities were already *recalibrated* by GATK, so their quality values look smoother than those of a fresh sequencing run.) In a paired-end run, the read with the same identifier in R1 and R2 comes from the two ends of the same DNA fragment.
+</div>
+
+| Phred Q | error probability | accuracy | ASCII character (Q + 33) |
+|---------|-------------------|----------|--------------------------|
+| 10 | 1 in 10 | 90% | `+` |
+| 20 | 1 in 100 | 99% | `5` |
+| 30 | 1 in 1,000 | 99.9% | `?` |
+| 40 | 1 in 10,000 | 99.99% | `I` |
+
+**Why base quality matters.** The variant caller does not count reads blindly: it **weights every base by its quality**. A mismatch at Q40 is strong evidence of a real difference from the reference; the same mismatch at Q10 is probably a sequencing error. If low-quality bases were trusted, every sequencing error would become a candidate variant. This is why we trim low-quality tails (Part 2) and later ignore bases below Q20 (Part 5).
+
+<div class="alert-info">
+**R1 and R2 must stay in sync.** The two files list the mates of each pair **in the same order**: read *n* of R1 pairs with read *n* of R2. Never filter or sort one file alone: paired-aware tools like `fastp` drop or keep both mates together.
 </div>
 
 ## The Exome Targets
@@ -238,9 +281,34 @@ awk '{bp += $3 - $2} END {print "Targeted bases: " bp}' data/germline/exome_targ
 
 A **BED** file lists intervals as `chromosome  start  end`, with **0-based** start (the first base of a chromosome is 0) and 1-based end. Only about 9% of our 3 Mb region is targeted: an exome captures the coding exons, ~1–2% of the genome.
 
+<div class="alert-info">
+**0-based vs 1-based coordinates: the most common bug in bioinformatics.** Formats count positions differently. The first 10 bases of chromosome 11 are written:
+
+| format | convention | first 10 bases | interval length |
+|--------|------------|----------------|-----------------|
+| BED | 0-based, half-open `[start, end)` | `chr11  0  10` | `end - start` |
+| SAM/BAM, VCF, GFF3 | 1-based, closed `[start, end]` | `1–10` | `end - start + 1` |
+
+So a VCF variant at `POS = 2000` becomes the BED line `chr11  1999  2000` (we do exactly this conversion in Part 7). Off-by-one errors silently shift every position by one base.
+</div>
+
 # Part 2 — Read QC and Trimming with fastp
 
+**Garbage in, garbage out.** Every downstream step trusts the reads: QC is the first place to catch a failed run, a contaminated library or a degraded sample, before spending hours of compute on it.
+
 `fastp` checks read quality and removes what would hurt the alignment: adapter sequence (when the DNA fragment is shorter than the read), low-quality tails, reads with too many unknown bases (`N`).
+
+```text
+Normal case: fragment (insert) longer than the read
+   5' ═══════════════════════════════════════════ 3'   DNA fragment
+      R1 ──────────────►            ◄────────────── R2
+
+Adapter read-through: fragment shorter than the read
+      ═════════════════                                DNA fragment (short)
+      R1 ──────────────►▒▒▒▒▒▒▒▒                       ▒ = adapter bases sequenced
+```
+
+Adapter bases are not part of the genome: left in place, they would make the read's end mismatch the reference, causing soft-clipping, misalignment or false variants near read ends.
 
 ```{bash fastp, echo=TRUE}
 fastp \
@@ -294,9 +362,30 @@ bind_rows(
 **How to read it.** Illumina quality is highest at the start of the read and drops toward the end; **R2 is usually a bit worse than R1**. Most bases above the dashed Q30 line is a good run. Very few reads are removed here: this is a high-quality dataset. Open `work/fastp.html` in the Files pane for the full report.
 </div>
 
+| fastp metric | what it tells you | indicative value for a good exome run |
+|--------------|-------------------|---------------------------------------|
+| Q30 rate | fraction of bases with < 1/1,000 error | > 80–85% |
+| Reads passing filter | how many reads survive trimming | > 95% |
+| Adapter-trimmed reads | how short the fragments are | depends on library; very high = short, possibly degraded DNA |
+| Duplication rate | PCR/optical copies (estimated from sequence only) | < 10–20%; high = low-complexity library |
+| GC content | should match the target design | strong deviations suggest contamination or bias |
+
+These thresholds are guidelines, not laws: each lab sets its own from experience with its kit and sequencer.
+
 # Part 3 — Alignment with BWA-MEM
 
-Alignment finds, for every read, the position in the reference genome it most likely came from. **BWA-MEM** is the standard aligner for short DNA reads. It first needs an **index** of the reference (built once per reference genome):
+Alignment finds, for every read, the position in the reference genome it most likely came from. 
+**Why is it hard?** A whole exome produces ~50–100 million reads of 150 bp, to be placed on a 3-billion-base genome, while tolerating real variants, sequencing errors and repeated sequences that occur in many copies. Comparing each read with every position would take years.
+
+**BWA-MEM** is the standard aligner for short DNA reads. It uses a **seed-and-extend** strategy: it looks up short exact matches (*seeds*) in a compressed index of the genome (the Burrows–Wheeler transform / FM-index), then extends the best seeds into a full alignment allowing mismatches and gaps.
+
+The reference itself is a **FASTA** file: a header line starting with `>` (the sequence name, e.g. `>11`) followed by the bases.
+
+```{bash fasta-head, echo=TRUE}
+head -c 300 data/germline/reference_chr11p15.fa; echo
+```
+
+BWA first needs an **index** of the reference (built once per reference genome):
 
 ```{bash bwa-index, echo=TRUE}
 cp data/germline/reference_chr11p15.fa work/reference.fa
@@ -304,6 +393,17 @@ bwa index work/reference.fa 2> work/bwa_index.log
 samtools faidx work/reference.fa
 ls work/reference.fa*
 ```
+
+| file | created by | purpose |
+|------|------------|---------|
+| `.bwt`, `.sa` | `bwa index` | Burrows–Wheeler transform and suffix array: fast lookup of seeds |
+| `.pac` | `bwa index` | the reference packed in 2 bits per base |
+| `.ann`, `.amb` | `bwa index` | sequence names and positions of ambiguous bases (`N`) |
+| `.fai` | `samtools faidx` | FASTA index: lets tools jump to any position without reading the whole file |
+
+<div class="alert-info">
+**Always use the same reference everywhere.** Aligner, variant caller, annotation and truth set must all use the same genome build (here GRCh37) and the same chromosome names (`11` vs `chr11`). Mixing GRCh37 and GRCh38 gives wrong positions without any error message.
+</div>
 
 Then we align, adding a **read group** (`-R`): a tag saying which sample and sequencing run every read belongs to, required by most downstream tools. The output (SAM) is piped directly into `samtools`, which sorts the alignments by position and writes the compressed **BAM** format.
 
@@ -317,11 +417,35 @@ samtools index work/aligned.bam
 ls -lh work/aligned.bam
 ```
 
-<div class="alert-info">
-**What `fixmate -m` does.** It adds to every read information about its mate (position, score). The duplicate-marking step below needs it to recognize pairs.
-</div>
+What each step of the pipe does:
+
+| step | why |
+|------|-----|
+| `bwa mem` | writes alignments in **SAM**, a plain-text format, grouped by read name (mates next to each other) |
+| `samtools fixmate -m` | adds information about each read's mate (mate score `ms`, mate CIGAR `MC`): `markdup` needs it to recognise duplicate **pairs** |
+| `samtools sort` | reorders alignments by **genomic position**, as required by every viewer and variant caller |
+| `samtools index` | creates `aligned.bam.bai`: like the index of a book, lets tools jump directly to a region instead of reading the whole file |
+
+| format | type | typical size (30× exome) | notes |
+|--------|------|--------------------------|-------|
+| SAM | plain text | ~30–50 GB | human-readable, never stored long-term |
+| BAM | binary, compressed (BGZF) | ~5–10 GB | the standard; index `.bai` |
+| CRAM | reference-based compression | ~2–4 GB | stores only differences from the reference; needs the **exact** same FASTA to be decoded; index `.crai` |
 
 ## Reading a SAM Record
+
+A SAM/BAM file has a **header** (lines starting with `@`) and one line per alignment.
+
+```{bash sam-header, echo=TRUE}
+samtools view -H work/aligned.bam | cut -c 1-120
+```
+
+| header line | meaning |
+|-------------|---------|
+| `@HD` | format version and sort order (`SO:coordinate` after sorting) |
+| `@SQ` | each reference sequence: name (`SN`) and length (`LN`) |
+| `@RG` | read groups: sample (`SM`), platform (`PL`), library (`LB`) — the `-R` we passed to `bwa` |
+| `@PG` | every program that touched the file, with its command line: a built-in record of provenance |
 
 ```{bash sam-view, echo=TRUE}
 samtools view work/aligned.bam | head -3 | cut -f 1-9
@@ -337,6 +461,37 @@ The first 9 columns of every alignment:
 | 5 | MAPQ | mapping quality: confidence that the position is right. 60 = unique; 0 = the read fits equally well elsewhere |
 | 6 | CIGAR | how the read aligns: `151M` = 151 aligned bases; `I`/`D` = insertion/deletion; `S` = soft-clipped |
 | 7–9 | RNEXT, PNEXT, TLEN | mate's chromosome (`=` same), mate's position, fragment length |
+| 10–11 | SEQ, QUAL | the read bases and their qualities (as in the FASTQ; reverse-complemented if the read maps to the reverse strand) |
+| 12+ | TAGS | optional fields in the form `XX:type:value` |
+
+```{bash sam-tags, echo=TRUE}
+samtools view work/aligned.bam | head -3 | cut -f 12-
+```
+
+| tag | meaning |
+|-----|---------|
+| `NM` | edit distance: number of mismatches + inserted + deleted bases versus the reference |
+| `MD` | string describing the mismatched reference bases (lets tools rebuild the reference without the FASTA) |
+| `AS` / `XS` | score of the best alignment / of the second-best. When `XS` is close to `AS` the read fits two places equally well → low MAPQ |
+| `RG` | the read group of this read |
+| `MC`, `ms` | mate CIGAR and mate score, added by `fixmate` |
+
+**MAPQ is also a Phred score**: MAPQ 20 = 1% probability that the read is placed in the wrong position. Reads in repeated sequences (pseudogenes, segmental duplications) get MAPQ near 0, and variant callers ignore them: this is why we pass `-q 20` to the caller in Part 5.
+
+**Decoding the FLAG.** The FLAG is a sum of powers of 2, each a yes/no property. The most frequent values in a paired-end BAM:
+
+| FLAG | = | meaning |
+|------|---|---------|
+| 99 | 1 + 2 + 32 + 64 | paired, properly paired, mate on reverse strand, first in pair |
+| 147 | 1 + 2 + 16 + 128 | paired, properly paired, read on reverse strand, second in pair |
+| 83 | 1 + 2 + 16 + 64 | paired, properly paired, read on reverse strand, first in pair |
+| 163 | 1 + 2 + 32 + 128 | paired, properly paired, mate on reverse strand, second in pair |
+| 4 (`0x4`) | | read unmapped |
+| 256 (`0x100`) | | secondary alignment (an alternative position for the same read) |
+| 1024 (`0x400`) | | PCR or optical duplicate |
+| 2048 (`0x800`) | | supplementary alignment (part of a split / chimeric read) |
+
+`samtools view -f X` keeps reads with all bits of `X` set, `-F X` removes reads with any of them. In Part 4 we use `-F 0x904` = `0x4 + 0x100 + 0x800`: drop unmapped, secondary and supplementary records, so that every mapped read is counted **once**.
 
 ## Marking PCR Duplicates
 
@@ -355,6 +510,17 @@ samtools flagstat work/aligned.markdup.bam > work/flagstat.txt
 head -n 8 work/flagstat.txt
 ```
 
+`flagstat` counts records by FLAG. Each line shows **QC-passed + QC-failed** reads. The lines to look at first: **mapped** (should be > 95–98% for human DNA; much lower suggests contamination or the wrong reference), **duplicates**, and **properly paired** (both mates mapped at the expected distance and orientation; low values suggest structural problems or a bad library).
+
+| alignment QC metric | indicative target for a clinical exome |
+|---------------------|----------------------------------------|
+| Mapped reads | > 98% |
+| Properly paired | > 95% |
+| Duplicate rate | < 10–20% |
+| On-target rate | 60–80% |
+| Mean target depth | ≥ 100× |
+| Targeted bases at ≥ 20× | ≥ 90–95% |
+
 ```{bash on-target, echo=TRUE}
 total=$(samtools view -c -F 0x904 work/aligned.markdup.bam)
 on_target=$(samtools view -c -F 0x904 -L data/germline/exome_targets.bed work/aligned.markdup.bam)
@@ -371,6 +537,23 @@ on_target_pct <- round(100 * on_target$reads[2] / on_target$reads[1], 1)
 ## Coverage
 
 **Coverage** (or depth) at a position is the number of reads covering it. It is the single most important number for variant calling: a heterozygous variant is seen in about half the reads, so with 4 reads it can easily be missed by chance.
+
+How easily? Each read of a heterozygous site carries the alternative allele with probability 0.5, like a coin toss. If a caller needs, say, at least 3 supporting reads, the chance of seeing them follows a binomial distribution:
+
+```{r plot-het-detection, fig.width=8, fig.height=4}
+tibble(depth = 1:40) %>%
+  mutate(p_detect = 1 - pbinom(2, depth, 0.5)) %>%
+  ggplot(aes(x = depth, y = p_detect)) +
+  geom_line(linewidth = 1, color = "#2980b9") +
+  geom_point(color = "#2980b9", size = 1.5) +
+  geom_vline(xintercept = c(10, 20), linetype = "dashed", color = "#e74c3c") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Read depth at a heterozygous site", y = "P(>= 3 reads show the ALT allele)",
+       title = "Chance of sampling enough evidence for a heterozygous variant") +
+  theme_bw(base_size = 12)
+```
+
+At 6× the variant is seen with enough reads only ~66% of the time; at 10× ~95%; at 20× > 99.9%. This simple calculation is the reason behind the "≥ 10×" and "≥ 20×" thresholds used throughout exome QC.
 
 ```{bash coverage, echo=TRUE}
 # -a: report every targeted position, also those with zero reads.
@@ -422,6 +605,18 @@ depth %>%
 
 At every targeted position, `bcftools mpileup` collects the bases of all reads (the "pileup") and computes **genotype likelihoods**: how probable the observed bases are if the sample is homozygous reference (0/0), heterozygous (0/1), or homozygous alternative (1/1). `bcftools call` then picks the most likely genotype and reports the positions that differ from the reference.
 
+```text
+Reference   ...G A T T C A G C...
+Read 1         A T T C A G          ref
+Read 2      G A T C C A             alt (C)
+Read 3           T C C A G C        alt (C)
+Read 4        A T T C               ref
+                  ▲
+         2 ref + 2 alt reads → most likely genotype 0/1 (heterozygous)
+```
+
+Intuitively: 0 alt reads out of many → 0/0; about half → 0/1; nearly all → 1/1. The statistical model adds what intuition misses: each base is weighted by its **base quality**, each read by its **mapping quality**, and the result is a probability, not a hard count. This is why the VCF reports both a genotype and a confidence (`QUAL`, `GQ`, `PL`).
+
 ```{bash call, echo=TRUE}
 bcftools mpileup -f work/reference.fa -T data/germline/exome_targets.bed \
     -a FORMAT/AD,FORMAT/DP -q 20 -Q 20 work/aligned.markdup.bam 2> /dev/null |
@@ -442,6 +637,21 @@ echo "Raw variant calls: $(bcftools view -H work/calls.raw.vcf.gz | wc -l)"
 
 A **VCF** (Variant Call Format) file has a header (lines starting with `#`) describing every field, then one line per variant.
 
+```{bash vcf-header, echo=TRUE}
+bcftools view -h work/calls.raw.vcf.gz |
+  grep -E '^##(fileformat|contig|INFO=<ID=DP,|FORMAT=<ID=(GT|PL|DP|AD),)|^#CHROM' | cut -c 1-140
+```
+
+| header line | meaning |
+|-------------|---------|
+| `##fileformat` | VCF version |
+| `##contig` | reference sequences and their length (must match the reference used) |
+| `##INFO=<ID=...>` | definition of each per-**site** field (column 8) |
+| `##FORMAT=<ID=...>` | definition of each per-**sample** field (columns 10+) |
+| `#CHROM ...` | column names; the last columns are the sample names (here `NA12878`, from the read group `SM`) |
+
+The header is self-documenting: whenever you meet an unknown field, look for its `##INFO` or `##FORMAT` line.
+
 ```{bash vcf-view, echo=TRUE}
 bcftools view -H work/calls.raw.vcf.gz | head -3 | cut -f 1-8 | cut -c 1-150
 ```
@@ -451,6 +661,32 @@ bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%QUAL\t[%GT\t%DP\t%AD]\n' work/call
 ```
 
 The essential columns: `POS` (1-based position), `REF` and `ALT` alleles, `QUAL` (Phred-scaled confidence that the site is variant), and per sample `GT` (genotype: `0/1` heterozygous, `1/1` homozygous alternative), `DP` (depth) and `AD` (reads supporting REF, ALT).
+
+| # | column | meaning |
+|---|--------|---------|
+| 1–2 | CHROM, POS | position (1-based); for indels, the base **before** the event |
+| 3 | ID | variant identifier, e.g. dbSNP `rs` number (`.` if none) |
+| 4–5 | REF, ALT | reference and alternative allele(s); several ALT alleles are comma-separated |
+| 6 | QUAL | Phred-scaled probability that the site is **not** variant: QUAL 30 = 1/1,000 chance of a false call |
+| 7 | FILTER | `PASS`, or the name of the filter(s) that failed (`.` = not yet filtered) |
+| 8 | INFO | site-level annotations `KEY=value;...` |
+| 9 | FORMAT | the order of the per-sample fields, e.g. `GT:PL:DP:AD` |
+| 10+ | sample(s) | the values for each sample, in the FORMAT order |
+
+| GT | meaning |
+|----|---------|
+| `0/0` | homozygous reference (usually not written in a variants-only VCF) |
+| `0/1` | heterozygous: one reference, one alternative allele |
+| `1/1` | homozygous alternative |
+| `1/2` | two different alternative alleles |
+| `./.` | no call: not enough data |
+| <code>0&#124;1</code> | phased: we know which allele is on which parental chromosome |
+
+Two different confidences live in a VCF: **QUAL** answers "is there a variant here?", **GQ** (genotype quality) answers "is the genotype right?" (e.g. 0/1 rather than 1/1). **PL** lists the Phred-scaled likelihoods of 0/0, 0/1 and 1/1: the genotype with PL = 0 is the most likely.
+
+<div class="alert-info">
+**`.vcf.gz` is not ordinary gzip.** VCFs (and BAMs) are compressed with **BGZF** (`bgzip`), a block-wise gzip that allows random access. Together with an index (`.tbi` from `tabix`, or `.csi`) a tool can jump to any region. A VCF compressed with plain `gzip` cannot be indexed: this is a frequent error message. **BCF** is the binary equivalent of VCF, as BAM is of SAM.
+</div>
 
 # Part 6 — Filtering, Normalizing and Annotating
 
@@ -464,9 +700,23 @@ bcftools index -t work/calls.filtered.vcf.gz
 bcftools query -f '%FILTER\n' work/calls.filtered.vcf.gz | sort | uniq -c
 ```
 
+<div class="alert-info">
+**Hard filters are a trade-off.** Stricter thresholds remove more false positives but also lose real variants (lower recall); looser ones do the opposite. Fixed thresholds are simple and transparent, which is why we use them here. Large projects often prefer **model-based** filtering (GATK VQSR, or callers like DeepVariant that learn what a real variant looks like), which needs many variants or a trained model.
+</div>
+
 ## Normalizing
 
 The same indel can be written in several ways (e.g. a deletion inside a repeat can be placed at any copy of the repeat). `bcftools norm` puts every variant in a **canonical** form (left-aligned, minimal alleles) and splits multi-allelic sites into one line per allele. Without this, comparing two VCFs (as we do in Part 7) misses identical variants written differently.
+
+```text
+Reference (positions 1-8):   C A G A G A G T        (AG)x3 repeat
+Sample:                      C A G A G T            one AG unit deleted
+
+Three valid VCF records for the SAME deletion:
+  POS 1   REF CAG  ALT C     ← left-aligned: the canonical form chosen by bcftools norm
+  POS 3   REF GAG  ALT G
+  POS 5   REF GAG  ALT G
+```
 
 ```{bash norm, echo=TRUE}
 bcftools norm -f work/reference.fa -m -any work/calls.filtered.vcf.gz -Oz -o work/calls.norm.vcf.gz 2> /dev/null
@@ -494,6 +744,24 @@ Here the ratio is **`r tstv`**: between the two. Part of the reason is that the 
 ## Functional Annotation
 
 Which variants change a protein? `bcftools csq` compares each variant with the gene annotation and predicts its **consequence** on every transcript: synonymous, missense, stop gained, frameshift, splice site, UTR...
+
+The annotation is a **GFF3** file: one line per feature (gene, transcript, exon, CDS), with 1-based coordinates, strand, and attributes such as `ID`, `Parent` and `Name` linking exons to transcripts and transcripts to genes.
+
+```{bash gff-head, echo=TRUE}
+grep -v '^#' data/germline/genes_Ensembl87.gff3 | awk '$3 == "gene"' | head -3 | cut -c 1-160
+```
+
+| consequence | effect on the protein | typical impact |
+|-------------|----------------------|----------------|
+| synonymous | codon changes, amino acid does not | usually none |
+| missense | one amino acid replaced | from harmless to severe |
+| inframe insertion/deletion | amino acids added/removed, frame kept | variable |
+| stop gained (nonsense) | premature stop codon | often loss of function |
+| frameshift | indel not multiple of 3: reading frame shifted | often loss of function |
+| splice donor/acceptor | the 2 bp at exon–intron borders altered | often exon skipping |
+| UTR, intron | outside the coding sequence | usually mild; may affect regulation or splicing |
+
+One variant can have **different consequences on different transcripts** of the same gene (missense on one isoform, intronic on another). Clinical reports therefore choose one reference transcript per gene, today usually the **MANE Select** transcript.
 
 ```{bash csq, echo=TRUE}
 bcftools csq -f work/reference.fa -g data/germline/genes_Ensembl87.gff3 -p a \
@@ -667,6 +935,33 @@ kable(count(false_positives, gene, name = "false_positives", sort = TRUE),
 <div class="alert-info">
 **False positives cluster in difficult genes.** Most of them fall in `MUC5B` (and other mucin genes), made of long, nearly identical **tandem repeats**: short reads cannot be placed unambiguously, and small misalignments look like variants. They pass our filters with good quality and depth. Every pipeline struggles with such regions; real projects either exclude them (GIAB publishes "difficult region" lists) or confirm variants there with another technology (e.g. Sanger or long reads) before reporting them.
 </div>
+
+# File Formats Cheat Sheet
+
+| format | contains | coordinates | compressed form | index | look inside with |
+|--------|----------|-------------|-----------------|-------|------------------|
+| FASTQ | reads + base qualities | — | `.fastq.gz` (gzip) | — | `zcat`, `head` |
+| FASTA | reference sequence | — | `.fa` (or bgzip) | `.fai` (+ aligner index) | `samtools faidx ref.fa 11:1000-1100` |
+| BED | genomic intervals | 0-based, half-open | `.bed.gz` (bgzip) | `.tbi` | `head`, `bedtools` |
+| GFF3 / GTF | genes, transcripts, exons | 1-based, closed | `.gff3.gz` | `.tbi` | `grep`, `awk` |
+| SAM / BAM / CRAM | aligned reads | 1-based | BAM (BGZF), CRAM | `.bai` / `.crai` | `samtools view` |
+| VCF / BCF | variants and genotypes | 1-based | `.vcf.gz` (bgzip), BCF | `.tbi` / `.csi` | `bcftools view`, `bcftools query` |
+
+## Glossary
+
+| term | definition |
+|------|------------|
+| **Coverage / depth** | number of reads covering a position |
+| **On-target rate** | fraction of reads falling in the capture targets |
+| **Read group** | label linking each read to its sample, library and run |
+| **PCR duplicate** | copy of the same original DNA molecule; not independent evidence |
+| **MAPQ** | confidence that a read is placed at the right position (Phred) |
+| **Genotype likelihood** | probability of the observed reads under 0/0, 0/1 and 1/1 |
+| **Normalization** | writing each variant in one canonical (left-aligned, minimal) form |
+| **Truth set** | trusted list of a sample's variants, used to measure a pipeline |
+| **Recall (sensitivity)** | fraction of real variants that are found |
+| **Precision** | fraction of reported variants that are real |
+| **Callable region** | positions with enough data (e.g. ≥ 10×) to call a variant reliably |
 
 # Summary
 

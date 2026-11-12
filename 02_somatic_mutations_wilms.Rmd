@@ -165,10 +165,10 @@ knitr::opts_chunk$set(
 ```
 
 ```{r libraries, include=FALSE}
-library(maftools)    # summarize, visualize and compare somatic mutations (MAF files)
-library(tidyverse)   # loaded after maftools so dplyr verbs are not masked
-library(DT)          # interactive downloadable tables
-library(knitr)       # kable for simple inline tables
+library(maftools)
+library(tidyverse)
+library(DT)     
+library(knitr)
 ```
 
 # From Module 1
